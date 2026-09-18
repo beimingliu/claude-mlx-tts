@@ -1,0 +1,16 @@
+{
+  "description": "Speak a Luna recap when a Codex turn completes.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel)/scripts/codex-tts.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

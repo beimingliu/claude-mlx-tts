@@ -8,9 +8,10 @@ requires-python = ">=3.10"
 authors = [{ name = "aperepel" }]
 keywords = ["tts", "voice-cloning", "mlx", "chatterbox", "claude", "apple-silicon"]
 
-# No core dependencies - default uses macOS 'say' command
+# Lightweight core dependencies; the default speech backend uses macOS 'say'
 dependencies = [
     "pyright>=1.1.408",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
