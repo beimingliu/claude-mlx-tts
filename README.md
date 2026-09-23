@@ -6,8 +6,9 @@ When Claude finishes deep work, hear a brief AI-generated summary spoken aloudâ€
 
 The checkout also includes an optional Codex `Stop` hook. See [Codex integration](docs/CODEX.md) for setup and controls.
 
-When HearHear is installed, its **Pause voice output** control suppresses this
-plugin's Stop and permission notifications, plus `/say` and `/summary-say`.
+The separate **Voice Integrations** app provides a **Pause voice output**
+control for this plugin's Stop and permission notifications, plus `/say`
+and `/summary-say`. Open the controller from Applications or Spotlight.
 HearHear recording and managed playback also share an audio lock, preventing
 them from starting over one another. Claude's existing `/tts-mute` control
 continues to work independently. Pausing suppresses future managed output; it

@@ -35,7 +35,7 @@ in the Codex CLI to inspect the global hook definition.
 
 Copy these runtime files together when installing or updating the hook:
 `codex-tts.sh`, `codex_tts.py`, `tts_pipeline.py`, and `voice_output.py`. The
-last file implements HearHear's pause-state and audio-lock contract; omitting
+last file implements the shared pause-state and audio-lock contract; omitting
 it makes the adapter incomplete.
 
 ## Provider and model
@@ -91,11 +91,13 @@ CODEX_TTS_BACKEND=say codex          # bypass local TTS for a system voice
 
 ## Microphone coordination
 
-HearHear's **Pause voice output** control persists shared state at
+The standalone **Voice Integrations** app's **Pause voice output** control
+persists shared state at
 `~/Library/Application Support/HearHear/voice-output-state.json`. A missing
 file means active; an explicit pause, malformed file, or unreadable file
-suppresses work. Resume from HearHear's Integrations page to repair invalid
-state safely.
+suppresses work. Resume from Voice Integrations to repair invalid state.
+The HearHear directory is retained for compatibility with installed hooks;
+HearHear itself has no Integrations page or manual pause control.
 
 The Codex hook shares an advisory lock with HearHear at
 `~/Library/Application Support/HearHear/audio-turn-taking.lock`. HearHear
