@@ -26,6 +26,20 @@ from tts_pipeline import (  # noqa: E402
 import tts_pipeline  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def isolate_hearhear_contract(monkeypatch, tmp_path):
+    """Never let a developer's live pause/recording state affect unit tests."""
+
+    monkeypatch.setenv(
+        "HEARHEAR_VOICE_OUTPUT_STATE_PATH",
+        str(tmp_path / "voice-output-state.json"),
+    )
+    monkeypatch.setenv(
+        "HEARHEAR_AUDIO_LOCK_PATH",
+        str(tmp_path / "audio-turn-taking.lock"),
+    )
+
+
 class FakeHTTPResponse:
     def __init__(self, payload: dict):
         self.payload = payload
@@ -336,6 +350,50 @@ class TestTurnProcessing:
         summarize.assert_not_called()
         speak.assert_not_called()
 
+    def test_global_pause_skips_expensive_summary_and_speech(self, monkeypatch, tmp_path):
+        state = tmp_path / "voice-output-state.json"
+        state.write_text('{"paused":true}', encoding="utf-8")
+        monkeypatch.setenv("HEARHEAR_VOICE_OUTPUT_STATE_PATH", str(state))
+        monkeypatch.setenv("CODEX_TTS_STATE_DIR", str(tmp_path / "state"))
+        summarize = Mock()
+        speak = Mock()
+        monkeypatch.setattr(codex_tts, "summarize_with_luna", summarize)
+        monkeypatch.setattr(codex_tts, "speak_text", speak)
+        turn = codex_tts.NormalizedTurn(
+            source="codex",
+            session_id="session-paused",
+            turn_id="turn-paused",
+            response_text="This should not reach Luna.",
+        )
+
+        assert codex_tts.process_turn(turn) == "skipped-global-pause"
+        summarize.assert_not_called()
+        speak.assert_not_called()
+
+    def test_pause_race_after_summary_skips_playback(self, monkeypatch, tmp_path):
+        state = tmp_path / "voice-output-state.json"
+        state.write_text('{"paused":false}', encoding="utf-8")
+        monkeypatch.setenv("HEARHEAR_VOICE_OUTPUT_STATE_PATH", str(state))
+        monkeypatch.setenv("CODEX_TTS_STATE_DIR", str(tmp_path / "state"))
+
+        def summarize_and_pause(*_args, **_kwargs):
+            state.write_text('{"paused":true}', encoding="utf-8")
+            return SummaryResult("Finished.", "English")
+
+        speak = Mock()
+        monkeypatch.setattr(codex_tts, "summarize_with_luna", summarize_and_pause)
+        monkeypatch.setattr(codex_tts, "speak_text", speak)
+        monkeypatch.setattr(codex_tts, "is_muted", lambda: False)
+        turn = codex_tts.NormalizedTurn(
+            source="codex",
+            session_id="session-race",
+            turn_id="turn-race",
+            response_text="Finish this work.",
+        )
+
+        assert codex_tts.process_turn(turn) == "skipped-global-pause"
+        speak.assert_not_called()
+
     def test_claims_turn_and_speaks_luna_summary(self, monkeypatch, tmp_path):
         monkeypatch.setenv("CODEX_TTS_STATE_DIR", str(tmp_path / "state"))
         monkeypatch.setattr(codex_tts, "is_muted", lambda: False)
@@ -511,6 +569,22 @@ class TestHookEntrypoint:
                 )
             ),
         )
+        stdout = io.StringIO()
+        monkeypatch.setattr(sys, "stdout", stdout)
+
+        assert codex_tts.hook_main() == 0
+        assert stdout.getvalue() == "{}\n"
+        launch.assert_not_called()
+
+    def test_hook_does_not_launch_worker_for_malformed_global_state(
+        self, monkeypatch, tmp_path
+    ):
+        state = tmp_path / "voice-output-state.json"
+        state.write_text("not json", encoding="utf-8")
+        monkeypatch.setenv("HEARHEAR_VOICE_OUTPUT_STATE_PATH", str(state))
+        launch = Mock()
+        monkeypatch.setattr(codex_tts, "launch_worker", launch)
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"hook_event_name": "Stop"})))
         stdout = io.StringIO()
         monkeypatch.setattr(sys, "stdout", stdout)
 

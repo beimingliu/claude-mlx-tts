@@ -21,6 +21,8 @@ from datetime import datetime
 # =============================================================================
 
 from plugin_logging import setup_plugin_logging
+from claude_hook_worker import read_hook_input
+from voice_output import audio_turn_lock, state_suppression_reason, suppression_reason
 
 log = setup_plugin_logging()
 
@@ -75,14 +77,14 @@ def _generate_mlx_speech_direct(text: str, voice_name: str | None = None, play: 
 
 
 def _generate_mlx_speech_http(text: str, voice_name: str | None = None):
-    """Generate speech using HTTP server (fast warm latency, non-blocking)."""
+    """Generate and play speech through the warm HTTP server."""
     if not text or not text.strip():
         return
 
-    from mlx_server_utils import speak_mlx_nonblocking
+    from mlx_server_utils import speak_mlx_http
 
-    # Use non-blocking TTS so hook returns immediately
-    speak_mlx_nonblocking(text, voice=voice_name)
+    # Remain in this process so the shared audio lock covers all playback.
+    speak_mlx_http(text, voice=voice_name)
 
 
 # =============================================================================
@@ -101,10 +103,7 @@ def is_mlx_available() -> bool:
 
 def get_hook_input():
     """Read hook input from stdin."""
-    try:
-        return json.load(sys.stdin)
-    except (json.JSONDecodeError, EOFError):
-        return {}
+    return read_hook_input()
 
 
 def is_real_user_message(entry: dict) -> bool:
@@ -271,8 +270,9 @@ def summarize(text: str) -> str:
 def speak_say(message: str):
     """Speak using macOS say command."""
     clean_message = re.sub(r'\[[\w\s]+\]\s*', '', message)
-    subprocess.Popen(
+    subprocess.run(
         ["say", "-v", SAY_VOICE, "-r", str(SAY_RATE), clean_message],
+        check=False,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
@@ -297,12 +297,21 @@ def speak_mlx(message: str, hook_type: str = "stop"):
         speak_say(message)
 
 
-def speak(message: str):
-    """Speak message using configured TTS."""
-    if is_mlx_available():
-        speak_mlx(message)
-    else:
-        speak_say(message)
+def speak(message: str) -> bool:
+    """Speak while owning the shared audio turn for the full playback."""
+    if state_suppression_reason("before-playback") is not None:
+        return False
+    with audio_turn_lock() as available:
+        if not available:
+            log.info("skipped-audio-busy at before-playback")
+            return False
+        if state_suppression_reason("before-backend") is not None:
+            return False
+        if is_mlx_available():
+            speak_mlx(message)
+        else:
+            speak_say(message)
+    return True
 
 
 def main():
@@ -312,6 +321,9 @@ def main():
     # Option B: Prevent infinite recursion via stop_hook_active flag
     if hook_input.get("stop_hook_active", False):
         log.info("Stop hook already active, preventing recursion")
+        return
+
+    if suppression_reason("worker-start") is not None:
         return
 
     # Check if TTS is muted
@@ -336,6 +348,9 @@ def main():
     log.info(f"Threshold check: trigger={should_trigger}, duration={duration:.1f}s, tools={tool_count}, thinking={thinking}")
 
     if not should_trigger or not last_message:
+        return
+
+    if suppression_reason("before-summary") is not None:
         return
 
     log.info("Generating summary...")

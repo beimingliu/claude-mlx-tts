@@ -44,6 +44,11 @@ from tts_pipeline import (  # noqa: E402
     speak_text,
     summarize_with_luna,
 )
+from voice_output import (  # noqa: E402
+    audio_turn_lock,
+    state_suppression_reason,
+    suppression_reason,
+)
 
 
 log = logging.getLogger("codex-mlx-tts")
@@ -338,47 +343,6 @@ def playback_lock() -> Iterator[None]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _audio_turn_lock_path() -> Path:
-    configured = os.environ.get("CODEX_TTS_AUDIO_LOCK_PATH", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return (
-        Path.home()
-        / "Library/Application Support/HearHear/audio-turn-taking.lock"
-    )
-
-
-@contextmanager
-def audio_turn_lock() -> Iterator[bool]:
-    """Try to reserve the shared microphone/speech turn-taking lock."""
-
-    path = _audio_turn_lock_path()
-    try:
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        handle = path.open("a+")
-    except OSError:
-        yield False
-        return
-
-    with handle:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-
-def audio_turn_available() -> bool:
-    """Return whether HearHear is not holding the shared audio lock."""
-
-    with audio_turn_lock() as available:
-        return available
-
-
 def _summary_mode() -> str:
     mode = os.environ.get("CODEX_TTS_SUMMARY_MODE", "always").lower().strip()
     return mode if mode in {"off", "auto", "always"} else "always"
@@ -561,9 +525,10 @@ def process_turn(turn: NormalizedTurn) -> str:
         return "skipped-empty"
     if not _tts_enabled():
         return "skipped-disabled"
-    if not audio_turn_available():
-        log.info("microphone/audio turn is active; skipping: %s", turn.event_key)
-        return "skipped-audio-busy"
+    suppressed = suppression_reason("before-summary")
+    if suppressed:
+        log.info("%s: %s", suppressed, turn.event_key)
+        return suppressed
     if not claim_turn(turn):
         log.info("duplicate turn skipped: %s", turn.event_key)
         return "skipped-duplicate"
@@ -609,10 +574,16 @@ def process_turn(turn: NormalizedTurn) -> str:
     if prefix:
         spoken = f"{prefix} ... {spoken}"
     with playback_lock():
+        suppressed = suppression_reason("before-playback")
+        if suppressed:
+            return suppressed
         with audio_turn_lock() as available:
             if not available:
                 log.info("microphone/audio turn became active; skipping: %s", turn.event_key)
                 return "skipped-audio-busy"
+            state_reason = state_suppression_reason("before-backend")
+            if state_reason:
+                return state_reason
             result = speak_text(spoken, language_hint=language)
     log.info("turn spoken: %s backend=%s", turn.event_key, result)
     return result
@@ -680,16 +651,12 @@ def hook_main() -> int:
     if payload.get("stop_hook_active") is True:
         print("{}")
         return 0
-    if _tts_enabled():
-        with audio_turn_lock() as available:
-            if available:
-                try:
-                    launch_worker(payload)
-                except Exception as exc:
-                    # Hook failures must not block or alter the completed Codex turn.
-                    log.warning("could not launch worker: %s", exc)
-            else:
-                log.info("microphone/audio turn is active; skipping hook")
+    if _tts_enabled() and suppression_reason("before-worker") is None:
+        try:
+            launch_worker(payload)
+        except Exception as exc:
+            # Hook failures must not block or alter the completed Codex turn.
+            log.warning("could not launch worker: %s", exc)
     print("{}")
     return 0
 
@@ -709,8 +676,7 @@ def worker_main(payload_path: str) -> int:
             pass
     if not isinstance(payload, dict):
         return 0
-    if not audio_turn_available():
-        log.info("microphone/audio turn is active; skipping worker")
+    if suppression_reason("worker-start") is not None:
         return 0
 
     turn = normalize_payload(payload)

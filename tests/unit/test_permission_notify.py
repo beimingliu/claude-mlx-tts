@@ -33,6 +33,18 @@ spec.loader.exec_module(permission_notify)
 # FIXTURES - Test Data Helpers
 # =============================================================================
 
+@pytest.fixture(autouse=True)
+def isolate_hearhear_contract(monkeypatch, tmp_path):
+    """Keep the developer's live pause/recording state out of unit tests."""
+    monkeypatch.setenv(
+        "HEARHEAR_VOICE_OUTPUT_STATE_PATH",
+        str(tmp_path / "voice-output-state.json"),
+    )
+    monkeypatch.setenv(
+        "HEARHEAR_AUDIO_LOCK_PATH",
+        str(tmp_path / "audio-turn-taking.lock"),
+    )
+
 @pytest.fixture
 def temp_transcript():
     """Create a temporary transcript file for testing."""
@@ -599,6 +611,31 @@ class TestMainIntegration:
                     main()
                 assert exc.value.code == 1
 
+    def test_global_pause_returns_success_without_notification(self, monkeypatch, tmp_path):
+        """Shared manual pause must not alter Claude's permission decision."""
+        state = tmp_path / "voice-output-state.json"
+        state.write_text('{"paused":true}', encoding="utf-8")
+        monkeypatch.setenv("HEARHEAR_VOICE_OUTPUT_STATE_PATH", str(state))
+        speak = Mock()
+        monkeypatch.setattr(permission_notify, "speak_notification", speak)
+        monkeypatch.setattr(permission_notify, "get_hook_input", lambda: {"tool_name": "Bash"})
+
+        assert permission_notify.main() is None
+        speak.assert_not_called()
+
+    def test_notification_backend_runs_while_audio_lock_is_owned(self, monkeypatch):
+        observed = []
+
+        def inspect_lock(_message):
+            from voice_output import audio_turn_available
+            observed.append(audio_turn_available())
+
+        monkeypatch.setattr(permission_notify, "is_mlx_available", lambda: False)
+        monkeypatch.setattr(permission_notify, "speak_say", inspect_lock)
+
+        permission_notify.speak_notification("Bash")
+        assert observed == [False]
+
     def test_skips_notification_when_within_cooldown(self, temp_transcript, temp_cooldown_file):
         """Should skip notification when within cooldown period."""
         from permission_notify import main
@@ -874,19 +911,14 @@ def create_assistant_skill_tool_call(skill_name: str, timestamp=None):
 
 
 # =============================================================================
-# TEST: AskUserQuestion Skips TTS
+# TEST: AskUserQuestion Voice Notifications
 # =============================================================================
 
-class TestAskUserQuestionSkipsTTS:
-    """Tests verifying AskUserQuestion tool always skips TTS in the permission hook.
-
-    Interview questions are voiced by the interview skill via /say invocations.
-    The permission hook should NOT also voice them (would cause double-voicing).
-    Non-interview AskUserQuestion is interactive and doesn't need TTS notification.
-    """
+class TestAskUserQuestionVoiceNotifications:
+    """Tests direct question voicing without invoking a real backend."""
 
     def test_ask_user_question_skips_tts(self, temp_transcript, temp_cooldown_file):
-        """AskUserQuestion should skip TTS (skill handles interview voicing)."""
+        """AskUserQuestion should voice the extracted question once."""
         from permission_notify import main
 
         timestamp = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
@@ -913,15 +945,14 @@ class TestAskUserQuestionSkipsTTS:
 
         with patch('permission_notify.NOTIFY_TIMESTAMP_FILE', temp_cooldown_file):
             with patch('permission_notify.get_hook_input', return_value=hook_input):
-                with patch('permission_notify.speak_notification') as mock_speak:
+                with patch('permission_notify.speak_question') as mock_speak:
                     with pytest.raises(SystemExit):
                         main()
 
-                    # TTS should NOT be called - skill handles interview voicing
-                    mock_speak.assert_not_called()
+                    mock_speak.assert_called_once_with("What authentication method should we use?")
 
     def test_non_interview_ask_user_question_also_skips_tts(self, temp_transcript, temp_cooldown_file):
-        """Non-interview AskUserQuestion should also skip TTS."""
+        """Direct question voicing does not depend on an interview marker."""
         from permission_notify import main
 
         timestamp = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
@@ -949,9 +980,8 @@ class TestAskUserQuestionSkipsTTS:
 
         with patch('permission_notify.NOTIFY_TIMESTAMP_FILE', temp_cooldown_file):
             with patch('permission_notify.get_hook_input', return_value=hook_input):
-                with patch('permission_notify.speak_notification') as mock_speak:
+                with patch('permission_notify.speak_question') as mock_speak:
                     with pytest.raises(SystemExit):
                         main()
 
-                    # Should NOT be voiced
-                    mock_speak.assert_not_called()
+                    mock_speak.assert_called_once_with("Should I refactor this function?")

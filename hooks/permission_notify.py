@@ -20,6 +20,12 @@ SCRIPTS_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), "scripts")
 sys.path.insert(0, SCRIPTS_DIR)
 
 from plugin_logging import setup_plugin_logging, LOG_DIR  # noqa: E402
+from claude_hook_worker import read_hook_input  # noqa: E402
+from voice_output import (  # noqa: E402
+    audio_turn_lock,
+    state_suppression_reason,
+    suppression_reason,
+)
 
 # =============================================================================
 # LOGGING SETUP
@@ -106,10 +112,7 @@ def record_question(question_hash: str) -> None:
 
 def get_hook_input():
     """Read hook input from stdin."""
-    try:
-        return json.load(sys.stdin)
-    except (json.JSONDecodeError, EOFError):
-        return {}
+    return read_hook_input()
 
 
 def is_real_user_message(entry: dict) -> bool:
@@ -235,8 +238,9 @@ def speak_say(message: str):
     import subprocess
     import re
     clean_message = re.sub(r'\[[\w\s]+\]\s*', '', message)
-    subprocess.Popen(
+    subprocess.run(
         ["say", "-v", "Daniel", "-r", "200", clean_message],
+        check=False,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
@@ -258,9 +262,9 @@ def speak_mlx(message: str, voice: str | None = None, blocking: bool = False):
             log.info("MLX TTS (HTTP, blocking)")
             speak_mlx_http(message, voice=voice)
         else:
-            from mlx_server_utils import speak_mlx_nonblocking
-            log.info("MLX TTS (HTTP, non-blocking)")
-            speak_mlx_nonblocking(message, voice=voice)
+            from mlx_server_utils import speak_mlx_http
+            log.info("MLX TTS (HTTP, lock-owned)")
+            speak_mlx_http(message, voice=voice)
     except Exception as e:
         log.warning(f"MLX TTS failed: {e}, falling back to macOS say")
         speak_say(message)
@@ -302,17 +306,25 @@ def speak_question(question: str):
     """
     conversational = make_conversational(question)
 
-    if is_mlx_available():
-        try:
-            from tts_config import get_effective_hook_voice
-            voice = get_effective_hook_voice("interview_question")
-        except (ImportError, KeyError):
-            voice = None
-        log.info(f"Interview question [{voice}]: {conversational[:60]}...")
-        speak_mlx(conversational, voice=voice, blocking=False)
-    else:
-        log.info(f"Interview question [Daniel]: {conversational[:60]}...")
-        speak_say(conversational)
+    if state_suppression_reason("before-playback") is not None:
+        return
+    with audio_turn_lock() as available:
+        if not available:
+            log.info("skipped-audio-busy at before-playback")
+            return
+        if state_suppression_reason("before-backend") is not None:
+            return
+        if is_mlx_available():
+            try:
+                from tts_config import get_effective_hook_voice
+                voice = get_effective_hook_voice("interview_question")
+            except (ImportError, KeyError):
+                voice = None
+            log.info(f"Interview question [{voice}]: {conversational[:60]}...")
+            speak_mlx(conversational, voice=voice, blocking=True)
+        else:
+            log.info(f"Interview question [Daniel]: {conversational[:60]}...")
+            speak_say(conversational)
 
 
 def speak_notification(tool_name: str):
@@ -326,22 +338,33 @@ def speak_notification(tool_name: str):
 
     message = phrase_template.format(tool_name=tool_name)
 
-    if is_mlx_available():
-        try:
-            from tts_config import get_effective_hook_voice
-            voice = get_effective_hook_voice("permission_request")
-        except ImportError:
-            voice = None
-        log.info(f"TTS [{voice}]: {message}")
-        speak_mlx(message, voice=voice)
-    else:
-        log.info(f"TTS [Daniel] (MLX unavailable): {message}")
-        speak_say(message)
+    if state_suppression_reason("before-playback") is not None:
+        return
+    with audio_turn_lock() as available:
+        if not available:
+            log.info("skipped-audio-busy at before-playback")
+            return
+        if state_suppression_reason("before-backend") is not None:
+            return
+        if is_mlx_available():
+            try:
+                from tts_config import get_effective_hook_voice
+                voice = get_effective_hook_voice("permission_request")
+            except ImportError:
+                voice = None
+            log.info(f"TTS [{voice}]: {message}")
+            speak_mlx(message, voice=voice, blocking=True)
+        else:
+            log.info(f"TTS [Daniel] (MLX unavailable): {message}")
+            speak_say(message)
 
 
 def main():
     log.info("Permission hook invoked")
     hook_input = get_hook_input()
+
+    if suppression_reason("worker-start") is not None:
+        return
 
     # Log full hook input for debugging (to understand what fields are available)
     tool_name = hook_input.get("tool_name", "unknown")

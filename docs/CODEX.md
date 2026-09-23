@@ -33,6 +33,11 @@ project. The launcher and runtime files live in `~/.codex/tts`, independent of
 the current repository. Codex may ask you to review and trust it; use `/hooks`
 in the Codex CLI to inspect the global hook definition.
 
+Copy these runtime files together when installing or updating the hook:
+`codex-tts.sh`, `codex_tts.py`, `tts_pipeline.py`, and `voice_output.py`. The
+last file implements HearHear's pause-state and audio-lock contract; omitting
+it makes the adapter incomplete.
+
 ## Provider and model
 
 The default summary model is `gpt-5.6-luna`, with
@@ -85,6 +90,12 @@ CODEX_TTS_BACKEND=say codex          # bypass local TTS for a system voice
 ```
 
 ## Microphone coordination
+
+HearHear's **Pause voice output** control persists shared state at
+`~/Library/Application Support/HearHear/voice-output-state.json`. A missing
+file means active; an explicit pause, malformed file, or unreadable file
+suppresses work. Resume from HearHear's Integrations page to repair invalid
+state safely.
 
 The Codex hook shares an advisory lock with HearHear at
 `~/Library/Application Support/HearHear/audio-turn-taking.lock`. HearHear

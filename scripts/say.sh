@@ -1,5 +1,5 @@
 #!/bin/bash
-# Speak text directly using TTS (fire-and-forget)
+# Speak text directly using the managed TTS worker (fire-and-forget)
 # Usage: ./say.sh <text to speak>
 #
 # This script forks TTS to background and returns immediately.
@@ -16,65 +16,13 @@ else
     PYTHON="python3"
 fi
 
-# Get text from arguments
-TEXT="$*"
-
-if [ -z "$TEXT" ]; then
+if [ "$#" -eq 0 ]; then
     echo "Usage: say <text to speak>"
     exit 1
 fi
 
-# Fork TTS to background and return immediately
-# This makes the script fire-and-forget so callers don't block
-"$PYTHON" -c "
-import sys
-sys.path.insert(0, '$SCRIPT_DIR')
-
-# Import speak function inline to avoid hyphen import issue
-import subprocess
-import os
-import re
-import logging
-
-# Configure logging so mlx_tts_core metrics are visible
-logging.basicConfig(level=logging.INFO, format='%(message)s')
-
-SAY_VOICE = 'Daniel'
-SAY_RATE = 180
-
-def is_mlx_available():
-    try:
-        import mlx_audio
-        from tts_config import discover_voices
-        return len(discover_voices()) > 0
-    except ImportError:
-        return False
-
-def speak_say(message):
-    clean_message = re.sub(r'\[[\w\s]+\]\s*', '', message)
-    subprocess.run(['say', '-v', SAY_VOICE, '-r', str(SAY_RATE), clean_message])
-
-def speak_mlx(message):
-    try:
-        from mlx_server_utils import speak_mlx_http
-        speak_mlx_http(message)  # Uses speed from config
-    except Exception as e:
-        print(f'HTTP TTS failed: {e}, trying direct API')
-        try:
-            from mlx_tts_core import speak_mlx as speak_mlx_direct
-            speak_mlx_direct(message)  # Uses mlx_tts_core with metrics
-        except Exception as e2:
-            print(f'Direct TTS failed: {e2}, using macOS say')
-            speak_say(message)
-
-def speak(message):
-    if is_mlx_available():
-        speak_mlx(message)
-    else:
-        speak_say(message)
-
-speak('''$TEXT''')
-" >/dev/null 2>&1 &
+python3 "$SCRIPT_DIR/voice_output.py" --check --stage before-worker || exit 0
+"$PYTHON" "$SCRIPT_DIR/managed_speech.py" -- "$@" >/dev/null 2>&1 &
 
 # Disown the background process so it's not tied to this shell
 disown 2>/dev/null
