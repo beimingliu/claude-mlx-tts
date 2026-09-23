@@ -14,7 +14,12 @@ SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import codex_tts  # noqa: E402
-from tts_pipeline import LunaClient, ProviderSettings, build_summary_prompt  # noqa: E402
+from tts_pipeline import (  # noqa: E402
+    LunaClient,
+    ProviderSettings,
+    SummaryResult,
+    build_summary_prompt,
+)
 import tts_pipeline  # noqa: E402
 
 
@@ -26,7 +31,16 @@ class _Response:
         return False
 
     def read(self):
-        return json.dumps({"output_text": "La prueba pasó."}).encode("utf-8")
+        return json.dumps(
+            {
+                "output_text": json.dumps(
+                    {
+                        "metadata": {"summary_language": "Spanish"},
+                        "summary": "La prueba pasó.",
+                    }
+                )
+            }
+        ).encode("utf-8")
 
 
 def test_outgoing_responses_request_uses_luna_and_low_reasoning():
@@ -42,7 +56,7 @@ def test_outgoing_responses_request_uses_luna_and_low_reasoning():
             ProviderSettings("https://provider.example/v1/responses", "token")
         ).summarize("La prueba pasó.")
 
-    assert result == "La prueba pasó."
+    assert result == SummaryResult("La prueba pasó.", "Spanish")
     assert request_details["body"]["model"] == "gpt-5.6-luna"
     assert request_details["body"]["reasoning"] == {"effort": "low"}
 
@@ -56,7 +70,8 @@ def test_recap_prompt_preserves_language_and_identifiers():
     assert "Use Spanish for the spoken recap." in prompt
     assert "api/v1/users" in prompt
     assert "AIRML-1234" in prompt
-    assert "Preserve product names, file names, commands, identifiers, and numbers exactly." in prompt
+    assert '"summary_language":"Chinese or English"' in prompt
+    assert "15–35 words" in prompt
 
 
 def test_stop_payload_returns_empty_json_and_launches_detached_worker():
@@ -69,7 +84,7 @@ def test_stop_payload_returns_empty_json_and_launches_detached_worker():
     launch_worker = Mock(return_value=True)
 
     with (
-        patch.dict(os.environ, {"CODEX_TTS_DISABLED": "false"}),
+        patch.dict(os.environ, {"CODEX_TTS_ENABLED": "true"}),
         patch.object(codex_tts, "launch_worker", launch_worker),
         patch.object(codex_tts.sys, "stdin", io.StringIO(json.dumps(payload))),
         patch.object(codex_tts.sys, "stdout", new_callable=io.StringIO) as stdout,

@@ -1,8 +1,8 @@
 #!/bin/bash
 # Codex Stop hook launcher.
 #
-# Keep dependency installation out of the hook path. Run `uv sync --extra
-# mlx --extra dev` once when MLX voice cloning is desired.
+# Keep dependency installation out of the hook path. The default Codex TTS
+# backend calls the separate Qwen playground over localhost HTTP.
 
 set -u
 

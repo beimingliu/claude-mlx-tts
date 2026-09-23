@@ -30,5 +30,6 @@ def test_live_luna_summary_uses_low_effort_configuration():
         "backend. The audio device is not exercised by this test.",
     )
 
-    assert summary
-    assert len(summary) < 900
+    assert summary.text
+    assert summary.language
+    assert len(summary.text) < 900
